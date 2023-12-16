@@ -6,9 +6,12 @@ import copy
 import torch
 import torch.nn.functional as F
 import filterpy
+import munkres
+import scipy 
 
 from filterpy.kalman import UnscentedKalmanFilter
 import matching
+import hungarian_algorithm 
 from .basetrack import BaseTrack, TrackState
 
 class STrack(BaseTrack):
@@ -171,26 +174,14 @@ class BYTETracker(object):
             output_results = output_results.cpu().numpy()
             scores = output_results[:, 4] * output_results[:, 5]
             bboxes = output_results[:, :4]  # x1y1x2y2
-        img_h, img_w = img_info[0], img_info[1]
-        scale = min(img_size[0] / float(img_h), img_size[1] / float(img_w))
-        bboxes /= scale
 
-        remain_inds = scores > self.args.track_thresh
-        inds_low = scores > 0.1
-        inds_high = scores < self.args.track_thresh
-
-        inds_second = np.logical_and(inds_low, inds_high)
-        dets_second = bboxes[inds_second]
-        dets = bboxes[remain_inds]
-        scores_keep = scores[remain_inds]
-        scores_second = scores[inds_second]
-
-        if len(dets) > 0:
-            '''Detections'''
-            detections = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
-                          (tlbr, s) in zip(dets, scores_keep)]
-        else:
-            detections = []
+        # Step 1: Separate detections based on score
+        high_scores_inds = scores > self.args.track_thresh
+        low_scores_inds = np.logical_and(scores > 0.1, scores < self.args.track_thresh)
+        dets_high = bboxes[high_scores_inds]
+        scores_high = scores[high_scores_inds]
+        dets_low = bboxes[low_scores_inds]
+        scores_low = scores[low_scores_inds]
 
         ''' Add newly detected tracklets to tracked_stracks'''
         unconfirmed = []
@@ -201,14 +192,14 @@ class BYTETracker(object):
             else:
                 tracked_stracks.append(track)
 
-        ''' Step 2: First association, with high score detection boxes'''
-        strack_pool = joint_stracks(tracked_stracks, self.lost_stracks)
-        # Predict the current location with KF
-        STrack.multi_predict(strack_pool)
-        dists = matching.iou_distance(strack_pool, detections)
+        # Step 2: Match high-score detections with tracked tracks using Hungarian algorithm
+        strack_pool = joint_stracks(self.tracked_stracks, self.lost_stracks)
+        dists = matching.iou_distance(strack_pool, dets_high)
+
         if not self.args.mot20:
-            dists = matching.fuse_score(dists, detections)
-        matches, u_track, u_detection = matching.linear_assignment(dists, thresh=self.args.match_thresh)
+            dists = matching.fuse_score(dists, dets_high)
+
+        matches, u_track, u_detection = hungarian_algorithm(dists, thresh=self.args.match_thresh)
 
         for itracked, idet in matches:
             track = strack_pool[itracked]
@@ -220,26 +211,11 @@ class BYTETracker(object):
                 track.re_activate(det, self.frame_id, new_id=False)
                 refind_stracks.append(track)
 
-        ''' Step 3: Second association, with low score detection boxes'''
-        # association the untrack to the low score detections
-        if len(dets_second) > 0:
-            '''Detections'''
-            detections_second = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
-                          (tlbr, s) in zip(dets_second, scores_second)]
-        else:
-            detections_second = []
-        r_tracked_stracks = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
-        dists = matching.iou_distance(r_tracked_stracks, detections_second)
-        matches, u_track, u_detection_second = matching.linear_assignment(dists, thresh=0.5)
-        for itracked, idet in matches:
-            track = r_tracked_stracks[itracked]
-            det = detections_second[idet]
-            if track.state == TrackState.Tracked:
-                track.update(det, self.frame_id)
-                activated_starcks.append(track)
-            else:
-                track.re_activate(det, self.frame_id, new_id=False)
-                refind_stracks.append(track)
+        # Step 3: Match low-score detections with remaining tracked tracks using Hungarian algorithm
+        if len(dets_low) > 0:
+            r_tracked_stracks = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
+            dists = matching.iou_distance(r_tracked_stracks, dets_low)
+            matches, u_track, u_detection_low = hungarian_algorithm(dists, thresh=0.5)
 
         for it in u_track:
             track = r_tracked_stracks[it]
