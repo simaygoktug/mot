@@ -15,12 +15,12 @@ import hungarian_algorithm
 from .basetrack import BaseTrack, TrackState
 
 class STrack(BaseTrack):
-    shared_kalman = UnscentedKalmanFilter()
-    def __init__(self, tlwh, score):
+    shared_ukf = UnscentedKalmanFilter()
 
+    def __init__(self, tlwh, score):
         # wait activate
         self._tlwh = np.asarray(tlwh, dtype=np.float)
-        self.unscented_kalman_filter = None
+        self.ukf = None
         self.mean, self.covariance = None, None
         self.is_activated = False
 
@@ -31,7 +31,7 @@ class STrack(BaseTrack):
         mean_state = self.mean.copy()
         if self.state != TrackState.Tracked:
             mean_state[7] = 0
-        self.mean, self.covariance = self.unscented_kalman_filter.predict(mean_state, self.covariance)
+        self.mean, self.covariance = self.ukf.predict(mean_state, self.covariance)
 
     @staticmethod
     def multi_predict(stracks):
@@ -41,16 +41,16 @@ class STrack(BaseTrack):
             for i, st in enumerate(stracks):
                 if st.state != TrackState.Tracked:
                     multi_mean[i][7] = 0
-            multi_mean, multi_covariance = STrack.shared_kalman.multi_predict(multi_mean, multi_covariance)
+            multi_mean, multi_covariance = STrack.shared_ukf.multi_predict(multi_mean, multi_covariance)
             for i, (mean, cov) in enumerate(zip(multi_mean, multi_covariance)):
                 stracks[i].mean = mean
                 stracks[i].covariance = cov
 
-    def activate(self, kalman_filter, frame_id):
+    def activate(self, ukf, frame_id):
         """Start a new tracklet"""
-        self.kalman_filter = kalman_filter
+        self.ukf = ukf
         self.track_id = self.next_id()
-        self.mean, self.covariance = self.kalman_filter.initiate(self.tlwh_to_xyah(self._tlwh))
+        self.mean, self.covariance = self.ukf.initiate(self.tlwh_to_xyah(self._tlwh))
 
         self.tracklet_len = 0
         self.state = TrackState.Tracked
@@ -61,7 +61,7 @@ class STrack(BaseTrack):
         self.start_frame = frame_id
 
     def re_activate(self, new_track, frame_id, new_id=False):
-        self.mean, self.covariance = self.kalman_filter.update(
+        self.mean, self.covariance = self.ukf.update(
             self.mean, self.covariance, self.tlwh_to_xyah(new_track.tlwh)
         )
         self.tracklet_len = 0
@@ -84,8 +84,9 @@ class STrack(BaseTrack):
         self.tracklet_len += 1
 
         new_tlwh = new_track.tlwh
-        self.mean, self.covariance = self.kalman_filter.update(
-            self.mean, self.covariance, self.tlwh_to_xyah(new_tlwh))
+        self.mean, self.covariance = self.ukf.update(
+            self.mean, self.covariance, self.tlwh_to_xyah(new_tlwh)
+        )
         self.state = TrackState.Tracked
         self.is_activated = True
 
