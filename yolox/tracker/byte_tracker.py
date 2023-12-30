@@ -5,7 +5,6 @@ import os.path as osp
 import copy
 import torch
 import torch.nn.functional as F
-import filterpy
 import munkres
 import scipy 
 
