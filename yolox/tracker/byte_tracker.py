@@ -4,11 +4,12 @@ import os
 import os.path as osp
 import copy
 import torch
+import filterpy
 import torch.nn.functional as F
 import munkres
 import scipy 
 
-from yolox.tracker.kalman_filter import UnscentedKalmanFilter
+from filterpy.kalman import UnscentedKalmanFilter
 import matching
 import hungarian_algorithm 
 from .basetrack import BaseTrack, TrackState
